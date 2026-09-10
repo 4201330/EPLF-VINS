@@ -4,9 +4,7 @@
 #include <sensor_msgs/PointCloud.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
-#include <sensor_msgs/Imu.h>
-#include <Eigen/Geometry>
-#include <deque>
+
 #include "linefeature_tracker.h"
 
 // #include "feature_tracker.h"
@@ -16,10 +14,6 @@
 vector<uchar> r_status;
 vector<float> r_err;
 queue<sensor_msgs::ImageConstPtr> img_buf;
-std::deque<sensor_msgs::ImuConstPtr> imu_buf;
-
-double last_image_stamp = -1.0;
-bool have_last_image_stamp = false;
 // Eigen::Matrix3d rci;
 
 ros::Publisher pub_img, pub_match, pub_detect;
@@ -32,210 +26,7 @@ double frame_cnt = 0;
 double sum_time = 0.0;
 double mean_time = 0.0;
 bool init_pub = 0;
-void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
-{
-    imu_buf.push_back(imu_msg);
 
-    while (imu_buf.size() > 5000)
-        imu_buf.pop_front();
-}
-Eigen::Vector3d gyroVector(
-    const sensor_msgs::ImuConstPtr &imu)
-{
-    return Eigen::Vector3d(
-        imu->angular_velocity.x,
-        imu->angular_velocity.y,
-        imu->angular_velocity.z);
-}
-
-
-bool interpolateGyroAt(
-    double t,
-    Eigen::Vector3d &gyro)
-{
-    if (imu_buf.size() < 2)
-        return false;
-
-    const double first_t =
-        imu_buf.front()->header.stamp.toSec();
-
-    const double last_t =
-        imu_buf.back()->header.stamp.toSec();
-
-// 图像回调可能略早于相邻 IMU 回调；20 ms 内使用最近角速度补齐
-    if (t < first_t)
-    {
-        if (first_t - t <= 0.020)
-        {
-            gyro = gyroVector(imu_buf.front());
-            return true;
-        }
-
-        return false;
-    }
-
-    if (t > last_t)
-    {
-        if (t - last_t <= 0.020)
-        {
-            gyro = gyroVector(imu_buf.back());
-            return true;
-        }
-
-        return false;
-    }
-
-    // 在线性插值后的 IMU 值中取得 t 时刻角速度
-    for (size_t i = 1; i < imu_buf.size(); ++i)
-    {
-        const double ta =
-            imu_buf[i - 1]->header.stamp.toSec();
-
-        const double tb =
-            imu_buf[i]->header.stamp.toSec();
-
-        if (tb <= ta || t < ta || t > tb)
-            continue;
-
-        const double alpha =
-            (t - ta) / (tb - ta);
-
-        const Eigen::Vector3d wa =
-            gyroVector(imu_buf[i - 1]);
-
-        const Eigen::Vector3d wb =
-            gyroVector(imu_buf[i]);
-
-        gyro = (1.0 - alpha) * wa + alpha * wb;
-
-        return true;
-    }
-
-    return false;
-}
-
-
-bool integrateImuRotation(
-    double t0,
-    double t1,
-    Eigen::Matrix3d &delta_R,
-    int &used_count)
-{
-    struct GyroSample
-    {
-        double t;
-        Eigen::Vector3d gyro;
-    };
-
-    delta_R.setIdentity();
-    used_count = 0;
-
-    Eigen::Vector3d gyro_t0;
-    Eigen::Vector3d gyro_t1;
-
-    // 必须在两个图像时间点精确取得 IMU 值
-    if (!interpolateGyroAt(t0, gyro_t0) ||
-        !interpolateGyroAt(t1, gyro_t1))
-    {
-       const double imu_first =
-    imu_buf.empty()
-        ? -1.0
-        : imu_buf.front()->header.stamp.toSec();
-
-const double imu_last =
-    imu_buf.empty()
-        ? -1.0
-        : imu_buf.back()->header.stamp.toSec();
-
-ROS_WARN_STREAM_THROTTLE(
-    1.0,
-    "[IMU INTEGRATION TEST] "
-    << "boundary unavailable, "
-    << "t0 = " << t0
-    << ", t1 = " << t1
-    << ", imu_first = " << imu_first
-    << ", imu_last = " << imu_last
-    << ", t1_minus_last = "
-    << (t1 - imu_last));
-
-        return false;
-    }
-
-    std::vector<GyroSample> samples;
-
-    samples.reserve(imu_buf.size() + 2);
-
-    // 精确的起始图像时刻
-    samples.push_back({t0, gyro_t0});
-
-    // 中间真实 IMU 样本
-    for (const auto &imu : imu_buf)
-    {
-        const double t =
-            imu->header.stamp.toSec();
-
-        if (t > t0 && t < t1)
-        {
-            samples.push_back({
-                t,
-                gyroVector(imu)
-            });
-        }
-    }
-
-    // 精确的结束图像时刻
-    samples.push_back({t1, gyro_t1});
-
-    // 当前 V1_03_difficult 的验证零偏
-    const Eigen::Vector3d gyro_bias(
-        -0.00212279,
-         0.019631,
-         0.0773053);
-
-    double integrated_dt = 0.0;
-
-    for (size_t i = 1; i < samples.size(); ++i)
-    {
-        const double dt =
-            samples[i].t - samples[i - 1].t;
-
-        if (dt <= 0.0 || dt > 0.1)
-            continue;
-
-        const Eigen::Vector3d gyro =
-            0.5 * (
-                samples[i - 1].gyro +
-                samples[i].gyro
-            ) - gyro_bias;
-
-        const double angle =
-            gyro.norm() * dt;
-
-        if (angle > 1e-12)
-        {
-            const Eigen::AngleAxisd dtheta(
-                angle,
-                gyro.normalized());
-
-            delta_R =
-                delta_R * dtheta.toRotationMatrix();
-        }
-
-        integrated_dt += dt;
-        ++used_count;
-    }
-
-    ROS_INFO_STREAM_THROTTLE(
-        1.0,
-        "[IMU INTEGRATION TEST] "
-        << "image_dt = " << (t1 - t0)
-        << " s, integrated_dt = "
-        << integrated_dt
-        << " s, segments = "
-        << used_count);
-
-    return used_count > 0;
-}
 void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
     if (first_image_flag)
@@ -261,70 +52,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     TicToc t_r;
 
     if (PUB_THIS_FRAME)
-    setImuHomography(
-    Eigen::Matrix3d::Identity(), false);
     {
-    double current_stamp = img_msg->header.stamp.toSec();
-
-if (have_last_image_stamp)
-{
-    Eigen::Matrix3d delta_R_imu;
-    int imu_count = 0;
-
-    bool imu_ok = integrateImuRotation(
-        last_image_stamp,
-        current_stamp,
-        delta_R_imu,
-        imu_count);
-
-    if (imu_ok)
-    {
-        Eigen::AngleAxisd aa(delta_R_imu);
-
-        double angle_deg =
-            aa.angle() * 180.0 / 3.141592653589793;
-            Eigen::Matrix3d delta_R_cam =
-    RCI * delta_R_imu * RCI.transpose();
-Eigen::Matrix3d K =
-    Eigen::Matrix3d::Identity();
-
-K(0, 0) = trackerData.K_.at<float>(0, 0);
-K(1, 1) = trackerData.K_.at<float>(1, 1);
-K(0, 2) = trackerData.K_.at<float>(0, 2);
-K(1, 2) = trackerData.K_.at<float>(1, 2);
-
-Eigen::Matrix3d H_imu =
-    K * delta_R_cam.transpose() * K.inverse();
-setImuHomography(H_imu, true);
-ROS_INFO_STREAM_THROTTLE(
-    1.0,
-    "[IMU HOMOGRAPHY TEST] "
-    << "H row0 = ["
-    << H_imu(0, 0) << ", "
-    << H_imu(0, 1) << ", "
-    << H_imu(0, 2) << "]");
-ROS_INFO_STREAM_THROTTLE(
-    1.0,
-    "[IMU CAMERA ROTATION TEST] "
-    << "R_cam row0 = ["
-    << delta_R_cam(0, 0) << ", "
-    << delta_R_cam(0, 1) << ", "
-    << delta_R_cam(0, 2) << "]");
-
-        ROS_INFO_STREAM(
-            "[IMU ROTATION TEST] "
-            << "image_dt = "
-            << current_stamp - last_image_stamp
-            << " s, imu_count = "
-            << imu_count
-            << ", delta_angle = "
-            << angle_deg
-            << " deg");
-    }
-}
-
-last_image_stamp = current_stamp;
-have_last_image_stamp = true;
         cv_bridge::CvImageConstPtr ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO8);
         cv::Mat show_img = ptr->image;
         //    cv::imshow("lineimg",show_img);
@@ -457,11 +185,7 @@ int main(int argc, char **argv)
 
     ROS_INFO("start line feature");
     ros::Subscriber sub_img = n.subscribe(IMAGE_TOPIC, 100, img_callback);
-ros::Subscriber sub_imu =
-    n.subscribe(IMU_TOPIC,
-                2000,
-                imu_callback,
-                ros::TransportHints().tcpNoDelay());
+
     pub_img = n.advertise<sensor_msgs::PointCloud>("linefeature", 1000);
     pub_match = n.advertise<sensor_msgs::Image>("linefeature_img", 1000);
     pub_detect = n.advertise<sensor_msgs::Image>("linefeature_detect", 1000);

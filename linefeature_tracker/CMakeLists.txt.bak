@@ -21,7 +21,19 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(OpenCV 3.4.16 REQUIRED COMPONENTS core imgproc highgui features2d calib3d videoio ximgproc)
 
+# Force EPLF-VINS to use OpenCV 3.4.16 headers before system OpenCV 4.x
+include_directories(BEFORE
+  /usr/local/opencv-3.4.16/include
+  /usr/local/opencv-3.4.16/include/opencv
+)
 find_package(Eigen3 REQUIRED)
+
+# Force OpenCV 3.4.16 headers to appear before system OpenCV 4.x
+include_directories(
+  BEFORE
+  /usr/local/opencv-3.4.16/include
+  /usr/local/opencv-3.4.16/include/opencv
+)
 
 # # System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -137,6 +149,17 @@ add_executable(linefeature_tracker
   src/parameters.cpp
   src/linefeature_tracker.cpp
   src/tic_toc.h
+)
+
+# Force linefeature_tracker to use OpenCV 3.4.16 headers
+target_include_directories(linefeature_tracker BEFORE PRIVATE
+  /usr/local/opencv-3.4.16/include
+  /usr/local/opencv-3.4.16/include/opencv
+)
+
+target_compile_options(linefeature_tracker PRIVATE
+  -I/usr/local/opencv-3.4.16/include
+  -I/usr/local/opencv-3.4.16/include/opencv
 )
 
 target_link_libraries(linefeature_tracker

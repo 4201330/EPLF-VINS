@@ -1,5 +1,6 @@
 
 #pragma once
+#include <numeric>
 
 #include <iostream>
 #include <queue>
@@ -167,7 +168,7 @@ struct Line
             return false;
 
         float mean, stdev, min_, angle_mean;
-        float sum = accumulate(sampleMagnitude.begin(), sampleMagnitude.end(), 0.0);
+        float sum = std::accumulate(sampleMagnitude.begin(), sampleMagnitude.end(), 0.0);
         // ROS_WARN("compute mean stdev min\n");
         mean = sum / sampleMagnitude.size();
         double accum = 0;
@@ -176,7 +177,7 @@ struct Line
         stdev = sqrt(accum / sampleMagnitude.size());
         min_ = *min_element(sampleMagnitude.begin(), sampleMagnitude.end());
 
-        float angle_sum = accumulate(sampleAngle.begin(), sampleAngle.end(), 0.0);
+        float angle_sum = std::accumulate(sampleAngle.begin(), sampleAngle.end(), 0.0);
         angle_mean = angle_sum / sampleAngle.size();
 
         //扩展线
@@ -335,6 +336,7 @@ public:
 };
 typedef shared_ptr<FrameLines> FrameLinesPtr;
 
+void setImuHomography(const Eigen::Matrix3d &H, bool valid);
 class LineFeatureTracker
 {
 public:

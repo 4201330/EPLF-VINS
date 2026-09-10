@@ -63,7 +63,7 @@ void callback(const sensor_msgs::PointCloudConstPtr &point_feature_msg,
     cv::circle(img1, endPoint, 2, cv::Scalar(0, 255, 0), 2);
   }
 
-  cv::remap(img1, show_img, undist_map1_, undist_map2_, CV_INTER_LINEAR);
+  cv::remap(img1, show_img, undist_map1_, undist_map2_, cv::INTER_LINEAR);
   for (int i = 0; i < line_feature_msg->points.size(); i++)
   {
     // cv::Point2f startPoint = cv::Point2f(line_feature_msg->channels[3].values[i], line_feature_msg->channels[4].values[i]);
