@@ -829,14 +829,22 @@ bool mergeTrackedLine(const Line &line, const Mat &merge, vector<Line> &vecline,
 void LineFeatureTracker::readImage(const cv::Mat &_img)
 {
 
-    cv::Mat img;
-    TicToc t_p;
-    frame_cnt++;
+    cv::Mat photometric_img;
+TicToc t_p;
+frame_cnt++;
 
-    // undistortion
-    cv::remap(_img, img, undist_map1_, undist_map2_, CV_INTER_LINEAR);
+// 先得到不经过CLAHE的去畸变图像
+cv::remap(
+    _img,
+    photometric_img,
+    undist_map1_,
+    undist_map2_,
+    CV_INTER_LINEAR);
 
-    if (EQUALIZE) // 直方图均衡化
+// 复制一份用于线检测和梯度计算
+cv::Mat img = photometric_img.clone();
+
+if (EQUALIZE)
     {
         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
         clahe->apply(img, img);
@@ -848,9 +856,14 @@ void LineFeatureTracker::readImage(const cv::Mat &_img)
         forw_img.reset(new FrameLines);
         cur_img.reset(new FrameLines);
         forw_img->img = img;
-        forw_img->img_pyr.push_back(img);
-        cur_img->img = img;
-        cur_img->img_pyr.push_back(img);
+forw_img->img_pyr.push_back(img);
+forw_img->photometric_img = photometric_img;
+forw_img->photometric_img_pyr.push_back(photometric_img);
+
+cur_img->img = img;
+cur_img->img_pyr.push_back(img);
+cur_img->photometric_img = photometric_img;
+cur_img->photometric_img_pyr.push_back(photometric_img);
         first_img = true;
         // ROS_WARN("compute gradient ...  ");
         Mat x_arr, y_arr;
@@ -863,7 +876,9 @@ void LineFeatureTracker::readImage(const cv::Mat &_img)
     {
         forw_img.reset(new FrameLines); // 初始化一个新的帧
         forw_img->img = img;
-        forw_img->img_pyr.push_back(img);
+forw_img->img_pyr.push_back(img);
+forw_img->photometric_img = photometric_img;
+forw_img->photometric_img_pyr.push_back(photometric_img);
         // ROS_WARN("compute gradient ...  ");
         Mat x_arr, y_arr;
         // Mat x_arr0,y_arr0;
@@ -988,7 +1003,14 @@ void LineFeatureTracker::readImage(const cv::Mat &_img)
             //追踪
             // ROS_WARN("-> here : %d\n", cur_img->vecLine.size());
             TicToc t_lineflow;
-            OpticalFlowMultiLevel(forw_img->magnitude, forw_img->angle, cur_img->img_pyr, forw_img->img_pyr, cur_img->vecLine, forw_img->vecLine, forw_img->success);
+            OpticalFlowMultiLevel(
+    forw_img->magnitude,
+    forw_img->angle,
+    cur_img->photometric_img_pyr,
+    forw_img->photometric_img_pyr,
+    cur_img->vecLine,
+    forw_img->vecLine,
+    forw_img->success);
             double lineflowtime = t_lineflow.toc() ;
             ofstream fout("/home/jiangdi/result_output/time/euroc/EPLF_VINS_WS/eplfvins_line_tracking.csv", ofstream::app);
             fout <<lineflowtime <<endl;

@@ -321,8 +321,13 @@ class FrameLines
 {
 public:
     int frame_id;
-    Mat img;
-    vector<Mat> img_pyr;
+    // CLAHE增强图像：用于线检测和梯度计算
+Mat img;
+vector<Mat> img_pyr;
+
+// 原始去畸变图像：用于光度残差和线光流
+Mat photometric_img;
+vector<Mat> photometric_img_pyr;
 
     vector<Line> vecLine;
     vector<LineRecord> lineRec;
