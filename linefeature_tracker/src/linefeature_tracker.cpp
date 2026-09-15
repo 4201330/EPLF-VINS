@@ -1,8 +1,16 @@
 #include "linefeature_tracker.h"
 #include <math.h>
+#include <fstream>
+#include <mutex>
 // #include "line_descriptor/src/precomp_custom.hpp"
 
 vector<vector<double>> param;
+namespace
+{
+std::mutex g_line_diag_mutex;
+std::ofstream g_line_diag_file;
+long long g_line_diag_frame = -1;
+}
 
 LineFeatureTracker::LineFeatureTracker()
 {
@@ -96,16 +104,64 @@ void OpticalFlowSingleLevel(
     const vector<Line> &kp1,
     vector<Line> &kp2,
     vector<int> &success,
-    bool inverse, bool has_initial, int layer)
+    bool inverse,
+    bool has_initial,
+    int layer)
 {
-
     kp2.resize(kp1.size());
     success.resize(kp1.size());
-    OpticalFlowTracker tracker(magnitude, img1, img2, kp1, kp2, success, inverse, has_initial, layer);
-    parallel_for_(Range(0, kp1.size()),
-                  std::bind(&OpticalFlowTracker::calculateOpticalFlow, &tracker, placeholders::_1));
-}
 
+    // 只在最精细的第0层记录一次，避免每个金字塔层重复记录
+    if (layer == 0)
+    {
+        std::lock_guard<std::mutex> lock(g_line_diag_mutex);
+
+        ++g_line_diag_frame;
+
+        // 第一次运行时创建CSV文件并写入表头
+        if (!g_line_diag_file.is_open())
+        {
+            g_line_diag_file.open(
+                "/tmp/eplf_line_diag.csv",
+                std::ios::out | std::ios::trunc);
+
+            g_line_diag_file
+                << "frame,line_index,x,y,"
+                << "mean_squared_residual,"
+                << "mean_patch_brightness_difference,"
+                << "gray_rejected,final_success,"
+                << "g1,g2,g3\n";
+        }
+    }
+
+    // 原来的线光流计算
+    OpticalFlowTracker tracker(
+        magnitude,
+        img1,
+        img2,
+        kp1,
+        kp2,
+        success,
+        inverse,
+        has_initial,
+        layer);
+
+    parallel_for_(
+        Range(0, kp1.size()),
+        std::bind(
+            &OpticalFlowTracker::calculateOpticalFlow,
+            &tracker,
+            placeholders::_1));
+
+    // 每帧计算结束后，将缓存的诊断结果写入磁盘
+    if (layer == 0)
+    {
+        std::lock_guard<std::mutex> lock(g_line_diag_mutex);
+
+        if (g_line_diag_file.is_open())
+            g_line_diag_file.flush();
+    }
+}
 #define _REGION_ 1
 
 bool checkgoodLine(const cv::Mat &magnitude, const std::vector<cv::Point2f> &line)
@@ -189,7 +245,7 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
             double cost = 0, lastCost = 0;
             int succ = i; // indicate if this point succeeded
             double errorGray = 0;
-
+            bool gray_rejected = false;
             // Gauss-Newton iterations
             Eigen::Matrix3d H = Eigen::Matrix3d::Zero(); // hessian
             Eigen::Vector3d b = Eigen::Vector3d::Zero(); // bias
@@ -328,9 +384,12 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
             cost /= ((2 * half_patch_size + 1) * (2 * half_patch_size + 1));
 
             // ROS_WARN("Error:%f  AvrError:%f", cost, errorGray);
-            if (layer == 0 && errorGray >= Graydoor * _POINTNUM_)
-
-                succ = -1;
+            if (layer == 0 &&
+    errorGray >= Graydoor * _POINTNUM_)
+{
+    gray_rejected = true;
+    succ = -1;
+}
             // else if (layer == 0)
             // {
             //     ofstream fout("/home/shitong/study/slam/lfvins_catkin/src/linefeature_tracker/src/error.csv", ios::out | ios::app);
@@ -364,6 +423,32 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
                 succ = -1;
 
             success[i] = succ;
+            if (layer == 0)
+{
+    const double point_count =
+        kp.empty() ? 1.0 : static_cast<double>(kp.size());
+
+    const Point2f diagnostic_point =
+        kp.empty() ? Point2f(-1.0f, -1.0f) : kp[0];
+
+    std::lock_guard<std::mutex> lock(g_line_diag_mutex);
+
+    if (g_line_diag_file.is_open())
+    {
+        g_line_diag_file
+            << g_line_diag_frame << ","
+            << i << ","
+            << diagnostic_point.x << ","
+            << diagnostic_point.y << ","
+            << cost / point_count << ","
+            << errorGray / point_count << ","
+            << (gray_rejected ? 1 : 0) << ","
+            << (succ != -1 ? 1 : 0) << ","
+            << g1 << ","
+            << g2 << ","
+            << g3 << "\n";
+    }
+}
         }
     }
 }
