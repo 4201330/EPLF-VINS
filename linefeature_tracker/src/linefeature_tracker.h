@@ -12,7 +12,7 @@
 #include "parameters.h"
 #include "tic_toc.h"
 #include "utility.h"
-
+#include "region_photometric_model.h"
 // #include <opencv2/line_descriptor.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/ximgproc.hpp>
@@ -321,13 +321,17 @@ class FrameLines
 {
 public:
     int frame_id;
-    // CLAHE增强图像：用于线检测和梯度计算
-Mat img;
-vector<Mat> img_pyr;
 
-// 原始去畸变图像：用于光度残差和线光流
-Mat photometric_img;
-vector<Mat> photometric_img_pyr;
+    // CLAHE增强图像：用于线检测和梯度计算
+    Mat img;
+    vector<Mat> img_pyr;
+
+    // 原始去畸变图像：用于光度残差和线光流
+    Mat photometric_img;
+    vector<Mat> photometric_img_pyr;
+
+    // 当前帧对应的4×3区域光照模型
+    RegionPhotometricModel region_photometric_model;
 
     vector<Line> vecLine;
     vector<LineRecord> lineRec;
@@ -424,6 +428,7 @@ void OpticalFlowMultiLevel(
     const vector<Line> &kp1,
     vector<Line> &kp2,
     vector<int> &success,
+    RegionPhotometricModel &region_model,
     bool inverse = false);
 #endif
 

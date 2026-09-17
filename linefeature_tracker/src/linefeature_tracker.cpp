@@ -453,6 +453,366 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
     }
 }
 
+namespace
+{
+
+struct PhotometricAccumulator
+{
+    int count = 0;
+    double sum_x = 0.0;
+    double sum_y = 0.0;
+    double sum_xx = 0.0;
+    double sum_xy = 0.0;
+
+    void add(double current_gray, double previous_gray)
+    {
+        ++count;
+        sum_x += current_gray;
+        sum_y += previous_gray;
+        sum_xx += current_gray * current_gray;
+        sum_xy += current_gray * previous_gray;
+    }
+};
+
+bool solveAffinePhotometricModel(
+    const PhotometricAccumulator &accumulator,
+    int minimum_samples,
+    double &gain,
+    double &bias)
+{
+    if (accumulator.count < minimum_samples)
+        return false;
+
+    const double count =
+        static_cast<double>(accumulator.count);
+
+    const double mean_x = accumulator.sum_x / count;
+    const double mean_y = accumulator.sum_y / count;
+
+    const double variance_x =
+        accumulator.sum_xx / count - mean_x * mean_x;
+
+    const double covariance_xy =
+        accumulator.sum_xy / count - mean_x * mean_y;
+
+    // 区域纹理或灰度变化太小，无法稳定估计增益。
+    if (variance_x < 25.0)
+        return false;
+
+    gain = covariance_xy / variance_x;
+    bias = mean_y - gain * mean_x;
+
+    if (!std::isfinite(gain) || !std::isfinite(bias))
+        return false;
+
+    // 防止少量错误匹配产生极端参数。
+    gain = std::max(0.5, std::min(2.0, gain));
+    bias = std::max(-50.0, std::min(50.0, bias));
+
+    return true;
+}
+
+void estimateRegionPhotometricModel(
+    const cv::Mat &previous_image,
+    const cv::Mat &current_image,
+    const vector<Line> &previous_lines,
+    const vector<Line> &current_lines,
+    const vector<int> &tracking_status,
+    RegionPhotometricModel &region_model)
+{
+
+    region_model.reset(current_image.cols, current_image.rows);
+
+    if (previous_image.empty() || current_image.empty())
+        return;
+
+    std::array<
+        PhotometricAccumulator,
+        RegionPhotometricModel::kRegionCount>
+        regional_accumulators;
+
+    PhotometricAccumulator global_accumulator;
+
+    const int patch_radius = 2;
+    const int minimum_region_samples = 200;
+
+    const size_t line_count = std::min(
+        previous_lines.size(),
+        std::min(current_lines.size(), tracking_status.size()));
+
+    for (size_t line_index = 0;
+         line_index < line_count;
+         ++line_index)
+    {
+        if (tracking_status[line_index] == -1)
+            continue;
+
+        const vector<Point2f> &previous_points =
+            previous_lines[line_index].keyPoint;
+
+        const vector<Point2f> &current_points =
+            current_lines[line_index].keyPoint;
+
+        const size_t point_count =
+            std::min(previous_points.size(), current_points.size());
+
+        for (size_t point_index = 0;
+             point_index < point_count;
+             ++point_index)
+        {
+            const Point2f &previous_point =
+                previous_points[point_index];
+
+            const Point2f &current_point =
+                current_points[point_index];
+
+            for (int offset_y = -patch_radius;
+                 offset_y <= patch_radius;
+                 ++offset_y)
+            {
+                for (int offset_x = -patch_radius;
+                     offset_x <= patch_radius;
+                     ++offset_x)
+                {
+                    const float previous_x =
+                        previous_point.x + offset_x;
+                    const float previous_y =
+                        previous_point.y + offset_y;
+
+                    const float current_x =
+                        current_point.x + offset_x;
+                    const float current_y =
+                        current_point.y + offset_y;
+
+                    // GetPixelValue使用双线性插值，需要为右下像素留边界。
+                    if (previous_x < 1.0f ||
+                        previous_x >= previous_image.cols - 2 ||
+                        previous_y < 1.0f ||
+                        previous_y >= previous_image.rows - 2 ||
+                        current_x < 1.0f ||
+                        current_x >= current_image.cols - 2 ||
+                        current_y < 1.0f ||
+                        current_y >= current_image.rows - 2)
+                    {
+                        continue;
+                    }
+
+                    const double previous_gray =
+                        GetPixelValue(
+                            previous_image,
+                            previous_x,
+                            previous_y);
+
+                    const double current_gray =
+                        GetPixelValue(
+                            current_image,
+                            current_x,
+                            current_y);
+
+                    // 排除接近饱和或纯黑的像素。
+                    if (previous_gray <= 5.0 ||
+                        previous_gray >= 250.0 ||
+                        current_gray <= 5.0 ||
+                        current_gray >= 250.0)
+                    {
+                        continue;
+                    }
+
+                    const int region_index =
+                        region_model.regionIndex(
+                            current_x,
+                            current_y);
+
+                    regional_accumulators[region_index].add(
+                        current_gray,
+                        previous_gray);
+
+                    global_accumulator.add(
+                        current_gray,
+                        previous_gray);
+                }
+            }
+        }
+    }
+
+    double global_gain = 1.0;
+    double global_bias = 0.0;
+
+    const bool global_valid =
+        solveAffinePhotometricModel(
+            global_accumulator,
+            minimum_region_samples,
+            global_gain,
+            global_bias);
+
+    for (int region_index = 0;
+         region_index < RegionPhotometricModel::kRegionCount;
+         ++region_index)
+    {
+        region_model.sample_count[region_index] =
+            regional_accumulators[region_index].count;
+
+        double region_gain = 1.0;
+        double region_bias = 0.0;
+
+        const bool region_valid =
+            solveAffinePhotometricModel(
+                regional_accumulators[region_index],
+                minimum_region_samples,
+                region_gain,
+                region_bias);
+
+        if (region_valid)
+        {
+            region_model.gain[region_index] = region_gain;
+            region_model.bias[region_index] = region_bias;
+            region_model.valid[region_index] = 1;
+        }
+        else
+        {
+            // 区域样本不足时回退到全图模型；全图也无效则保持1和0。
+            region_model.gain[region_index] =
+                global_valid ? global_gain : 1.0;
+
+            region_model.bias[region_index] =
+                global_valid ? global_bias : 0.0;
+
+            region_model.valid[region_index] = 0;
+        }
+    }
+
+    // 对有效区域做一次轻量邻域平滑。
+    const std::array<
+        double,
+        RegionPhotometricModel::kRegionCount>
+        original_gain = region_model.gain;
+
+    const std::array<
+        double,
+        RegionPhotometricModel::kRegionCount>
+        original_bias = region_model.bias;
+
+    for (int row = 0;
+         row < RegionPhotometricModel::kRows;
+         ++row)
+    {
+        for (int col = 0;
+             col < RegionPhotometricModel::kCols;
+             ++col)
+        {
+            const int center_index =
+                region_model.index(row, col);
+
+            if (!region_model.valid[center_index])
+                continue;
+
+            double neighbor_gain_sum = 0.0;
+            double neighbor_bias_sum = 0.0;
+            int neighbor_count = 0;
+
+            const int neighbor_rows[4] =
+                {row - 1, row + 1, row, row};
+
+            const int neighbor_cols[4] =
+                {col, col, col - 1, col + 1};
+
+            for (int neighbor = 0; neighbor < 4; ++neighbor)
+            {
+                const int neighbor_row = neighbor_rows[neighbor];
+                const int neighbor_col = neighbor_cols[neighbor];
+
+                if (neighbor_row < 0 ||
+                    neighbor_row >= RegionPhotometricModel::kRows ||
+                    neighbor_col < 0 ||
+                    neighbor_col >= RegionPhotometricModel::kCols)
+                {
+                    continue;
+                }
+
+                const int neighbor_index =
+                    region_model.index(
+                        neighbor_row,
+                        neighbor_col);
+
+                if (!region_model.valid[neighbor_index])
+                    continue;
+
+                neighbor_gain_sum +=
+                    original_gain[neighbor_index];
+
+                neighbor_bias_sum +=
+                    original_bias[neighbor_index];
+
+                ++neighbor_count;
+            }
+
+            if (neighbor_count > 0)
+            {
+                const double mean_neighbor_gain =
+                    neighbor_gain_sum / neighbor_count;
+
+                const double mean_neighbor_bias =
+                    neighbor_bias_sum / neighbor_count;
+
+                region_model.gain[center_index] =
+                    0.75 * original_gain[center_index] +
+                    0.25 * mean_neighbor_gain;
+
+                region_model.bias[center_index] =
+                    0.75 * original_bias[center_index] +
+                    0.25 * mean_neighbor_bias;
+            }
+        }
+    }
+
+    // 记录区域模型，但暂时不用于光流残差。
+    static std::ofstream region_log_file;
+    static int region_frame_index = 0;
+
+    if (!region_log_file.is_open())
+    {
+        region_log_file.open(
+            "/tmp/eplf_region_model.csv",
+            std::ios::out | std::ios::trunc);
+
+        region_log_file
+            << "frame,row,col,gain,bias,"
+            << "sample_count,valid\n";
+    }
+
+    if (region_log_file.is_open())
+    {
+        for (int row = 0;
+             row < RegionPhotometricModel::kRows;
+             ++row)
+        {
+            for (int col = 0;
+                 col < RegionPhotometricModel::kCols;
+                 ++col)
+            {
+                const int region_index =
+                    region_model.index(row, col);
+
+                region_log_file
+                    << region_frame_index << ","
+                    << row << ","
+                    << col << ","
+                    << region_model.gain[region_index] << ","
+                    << region_model.bias[region_index] << ","
+                    << region_model.sample_count[region_index] << ","
+                    << region_model.valid[region_index] << "\n";
+            }
+        }
+
+        region_log_file.flush();
+    }
+
+    ++region_frame_index;
+}
+
+} // namespace
+
+
 void OpticalFlowMultiLevel(
     const Mat &magnitude,
     const Mat &angle,
@@ -461,6 +821,7 @@ void OpticalFlowMultiLevel(
     const vector<Line> &kp1,
     vector<Line> &kp2,
     vector<int> &success,
+    RegionPhotometricModel &region_model,
     bool inverse)
 {
     // parameters
@@ -536,6 +897,13 @@ void OpticalFlowMultiLevel(
     auto time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
     // ROS_WARN("line : %d  use %f s\n", kp1.size(), time_used);
     // ROS_WARN("success multi level, %d lines\n", kp2_pyr.size());
+estimateRegionPhotometricModel(
+    img1_pyr[0],
+    img2_pyr[0],
+    kp1_pyr,
+    kp2_pyr,
+    successd,
+    region_model);
 
     //在kp2中，真正留下的是追踪成功的点
     //这些点对应的序号在success中保存
@@ -1003,14 +1371,15 @@ forw_img->photometric_img_pyr.push_back(photometric_img);
             //追踪
             // ROS_WARN("-> here : %d\n", cur_img->vecLine.size());
             TicToc t_lineflow;
-            OpticalFlowMultiLevel(
+           OpticalFlowMultiLevel(
     forw_img->magnitude,
     forw_img->angle,
     cur_img->photometric_img_pyr,
     forw_img->photometric_img_pyr,
     cur_img->vecLine,
     forw_img->vecLine,
-    forw_img->success);
+    forw_img->success,
+    forw_img->region_photometric_model);
             double lineflowtime = t_lineflow.toc() ;
             ofstream fout("/home/jiangdi/result_output/time/euroc/EPLF_VINS_WS/eplfvins_line_tracking.csv", ofstream::app);
             fout <<lineflowtime <<endl;
