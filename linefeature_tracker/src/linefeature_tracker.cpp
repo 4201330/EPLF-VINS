@@ -538,6 +538,12 @@ if (!refinement_pass)
 namespace
 {
 
+struct PhotometricSample
+{
+    double current_gray;
+    double previous_gray;
+};
+
 struct PhotometricAccumulator
 {
     int count = 0;
@@ -546,16 +552,22 @@ struct PhotometricAccumulator
     double sum_xx = 0.0;
     double sum_xy = 0.0;
     double sum_yy = 0.0;
+    vector<PhotometricSample> samples;
 
     void add(double current_gray, double previous_gray)
-    {
-        ++count;
-        sum_x += current_gray;
-        sum_y += previous_gray;
-        sum_xx += current_gray * current_gray;
-        sum_xy += current_gray * previous_gray;
-        sum_yy += previous_gray * previous_gray;
-    }
+{
+    ++count;
+    sum_x += current_gray;
+    sum_y += previous_gray;
+    sum_xx += current_gray * current_gray;
+    sum_xy += current_gray * previous_gray;
+    sum_yy += previous_gray * previous_gray;
+
+    PhotometricSample sample;
+    sample.current_gray = current_gray;
+    sample.previous_gray = previous_gray;
+    samples.push_back(sample);
+}
 };
 
 bool solveAffinePhotometricModel(
@@ -564,34 +576,173 @@ bool solveAffinePhotometricModel(
     double &gain,
     double &bias)
 {
-    if (accumulator.count < minimum_samples)
+    if (accumulator.count < minimum_samples ||
+        accumulator.samples.size() <
+            static_cast<size_t>(minimum_samples))
+    {
         return false;
+    }
 
     const double count =
         static_cast<double>(accumulator.count);
 
+    // 第一步：普通最小二乘提供初值。
     const double mean_x = accumulator.sum_x / count;
     const double mean_y = accumulator.sum_y / count;
 
     const double variance_x =
-        accumulator.sum_xx / count - mean_x * mean_x;
+        accumulator.sum_xx / count -
+        mean_x * mean_x;
 
     const double covariance_xy =
-        accumulator.sum_xy / count - mean_x * mean_y;
+        accumulator.sum_xy / count -
+        mean_x * mean_y;
 
-    // 区域纹理或灰度变化太小，无法稳定估计增益。
     if (variance_x < 25.0)
         return false;
 
     gain = covariance_xy / variance_x;
     bias = mean_y - gain * mean_x;
 
-    if (!std::isfinite(gain) || !std::isfinite(bias))
+    if (!std::isfinite(gain) ||
+        !std::isfinite(bias))
+    {
         return false;
+    }
 
-    // 防止少量错误匹配产生极端参数。
     gain = std::max(0.5, std::min(2.0, gain));
     bias = std::max(-50.0, std::min(50.0, bias));
+
+    // 第二步：使用Huber权重进行三轮IRLS。
+    const int robust_iterations = 3;
+
+    for (int iteration = 0;
+         iteration < robust_iterations;
+         ++iteration)
+    {
+        vector<double> absolute_residuals;
+        absolute_residuals.reserve(
+            accumulator.samples.size());
+
+        for (const PhotometricSample &sample :
+             accumulator.samples)
+        {
+            const double residual =
+                sample.previous_gray -
+                (gain * sample.current_gray + bias);
+
+            absolute_residuals.push_back(
+                std::abs(residual));
+        }
+
+        if (absolute_residuals.empty())
+            return false;
+
+        const size_t median_index =
+            absolute_residuals.size() / 2;
+
+        std::nth_element(
+            absolute_residuals.begin(),
+            absolute_residuals.begin() + median_index,
+            absolute_residuals.end());
+
+        const double median_absolute_residual =
+            absolute_residuals[median_index];
+
+        // 1.4826将MAD近似转换成高斯标准差。
+        const double robust_sigma =
+            1.4826 * median_absolute_residual;
+
+        // 至少保留2个灰度级的线性区间，避免过度抑制正常噪声。
+        const double huber_delta =
+            std::max(2.0, 1.345 * robust_sigma);
+
+        double weight_sum = 0.0;
+        double weighted_x_sum = 0.0;
+        double weighted_y_sum = 0.0;
+        double weighted_xx_sum = 0.0;
+        double weighted_xy_sum = 0.0;
+
+        for (const PhotometricSample &sample :
+             accumulator.samples)
+        {
+            const double residual =
+                sample.previous_gray -
+                (gain * sample.current_gray + bias);
+
+            const double absolute_residual =
+                std::abs(residual);
+
+            const double weight =
+                absolute_residual <= huber_delta
+                    ? 1.0
+                    : huber_delta / absolute_residual;
+
+            weight_sum += weight;
+            weighted_x_sum +=
+                weight * sample.current_gray;
+            weighted_y_sum +=
+                weight * sample.previous_gray;
+            weighted_xx_sum +=
+                weight *
+                sample.current_gray *
+                sample.current_gray;
+            weighted_xy_sum +=
+                weight *
+                sample.current_gray *
+                sample.previous_gray;
+        }
+
+        if (weight_sum < 10.0)
+            return false;
+
+        const double weighted_mean_x =
+            weighted_x_sum / weight_sum;
+
+        const double weighted_mean_y =
+            weighted_y_sum / weight_sum;
+
+        const double weighted_variance_x =
+            weighted_xx_sum / weight_sum -
+            weighted_mean_x * weighted_mean_x;
+
+        const double weighted_covariance_xy =
+            weighted_xy_sum / weight_sum -
+            weighted_mean_x * weighted_mean_y;
+
+        if (weighted_variance_x < 25.0)
+            return false;
+
+        double updated_gain =
+            weighted_covariance_xy /
+            weighted_variance_x;
+
+        double updated_bias =
+            weighted_mean_y -
+            updated_gain * weighted_mean_x;
+
+        if (!std::isfinite(updated_gain) ||
+            !std::isfinite(updated_bias))
+        {
+            return false;
+        }
+
+        updated_gain =
+            std::max(0.5, std::min(2.0, updated_gain));
+
+        updated_bias =
+            std::max(-50.0, std::min(50.0, updated_bias));
+
+        const double parameter_change =
+            std::abs(updated_gain - gain) +
+            0.01 * std::abs(updated_bias - bias);
+
+        gain = updated_gain;
+        bias = updated_bias;
+
+        if (parameter_change < 1e-6)
+            break;
+    }
 
     return true;
 }
