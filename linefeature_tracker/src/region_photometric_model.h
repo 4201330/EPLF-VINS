@@ -22,6 +22,9 @@ std::array<int, kRegionCount> sample_count;
 // 每个区域由多少条不同的线提供了像素
 std::array<int, kRegionCount> line_count;
 
+// 区域光照参数的置信度，范围为0到1。
+std::array<double, kRegionCount> confidence;
+
 std::array<int, kRegionCount> valid;
 
     RegionPhotometricModel()
@@ -38,6 +41,7 @@ std::array<int, kRegionCount> valid;
 bias.fill(0.0);
 sample_count.fill(0);
 line_count.fill(0);
+confidence.fill(0.0);
 valid.fill(0);
     }
 

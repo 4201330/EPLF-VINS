@@ -710,13 +710,57 @@ regional_accumulators[region_index].add(
         region_bias);
 
         if (region_valid)
-        {
-            region_model.gain[region_index] = region_gain;
-            region_model.bias[region_index] = region_bias;
-            region_model.valid[region_index] = 1;
-        }
-        else
-        {
+{
+    region_model.gain[region_index] = region_gain;
+    region_model.bias[region_index] = region_bias;
+    region_model.valid[region_index] = 1;
+
+    const double raw_region_mse =
+        computePhotometricMse(
+            regional_accumulators[region_index],
+            1.0,
+            0.0);
+
+    const double fitted_region_mse =
+        computePhotometricMse(
+            regional_accumulators[region_index],
+            region_gain,
+            region_bias);
+
+    double relative_improvement = 0.0;
+
+    if (raw_region_mse > 1e-9)
+    {
+        relative_improvement =
+            (raw_region_mse - fitted_region_mse) /
+            raw_region_mse;
+    }
+
+    relative_improvement =
+        std::max(0.0, relative_improvement);
+
+    const double pixel_confidence =
+        std::min(
+            1.0,
+            region_model.sample_count[region_index] / 300.0);
+
+    const double line_confidence =
+        std::min(
+            1.0,
+            region_model.line_count[region_index] / 4.0);
+
+    const double improvement_confidence =
+        std::min(
+            1.0,
+            relative_improvement / 0.10);
+
+    region_model.confidence[region_index] =
+        pixel_confidence *
+        line_confidence *
+        improvement_confidence;
+}
+else
+{
             // 区域样本不足时回退到全图模型；全图也无效则保持1和0。
             region_model.gain[region_index] =
                 global_valid ? global_gain : 1.0;
@@ -725,6 +769,7 @@ regional_accumulators[region_index].add(
                 global_valid ? global_bias : 0.0;
 
             region_model.valid[region_index] = 0;
+            region_model.confidence[region_index] = 0.0;
         }
     }
 
@@ -824,7 +869,7 @@ regional_accumulators[region_index].add(
 
         region_log_file
     << "frame,row,col,gain,bias,"
-    << "sample_count,line_count,valid,"
+    << "sample_count,line_count,valid,confidence,"
     << "raw_mse,corrected_mse\n";
     }
 
@@ -862,6 +907,7 @@ const double corrected_mse =
                     << region_model.sample_count[region_index] << ","
                     << region_model.line_count[region_index] << ","
                     << region_model.valid[region_index] << ","
+                    << region_model.confidence[region_index] << ","
                     << raw_mse << ","
                     << corrected_mse << "\n";
             }
