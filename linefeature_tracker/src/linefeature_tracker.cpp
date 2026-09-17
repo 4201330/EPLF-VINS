@@ -1066,9 +1066,33 @@ void OpticalFlowMultiLevel(
         // ROS_WARN("begin single level(%d)\n", level);
         chrono::steady_clock::time_point t3 = chrono::steady_clock::now();
         if (level == 0)
-            OpticalFlowSingleLevel(magnitude, img1_pyr[level], img2_pyr[level], kp1_pyr, kp2_pyr, successd, false, true, level);
+            OpticalFlowSingleLevel(
+    magnitude,
+    img1_pyr[level],
+    img2_pyr[level],
+    kp1_pyr,
+    kp2_pyr,
+    successd,
+    false,
+    true,
+    level,
+    nullptr,
+    false,
+    false);
         else
-            OpticalFlowSingleLevel(magnitude, img1_pyr[level], img2_pyr[level], kp1_pyr, kp2_pyr, successd, false, true, level);
+            OpticalFlowSingleLevel(
+    magnitude,
+    img1_pyr[level],
+    img2_pyr[level],
+    kp1_pyr,
+    kp2_pyr,
+    successd,
+    false,
+    true,
+    level,
+    nullptr,
+    false,
+    false);
         // ROS_WARN("success single level(%d)\n", level);
         chrono::steady_clock::time_point t4 = chrono::steady_clock::now();
         auto time_used = chrono::duration_cast<chrono::duration<double>>(t4 - t3);
@@ -1095,6 +1119,109 @@ estimateRegionPhotometricModel(
     kp2_pyr,
     successd,
     region_model);
+
+// 保存第一遍结果；第二遍失败时可以安全回退。
+const vector<Line> kp2_before_refinement = kp2_pyr;
+const vector<int> success_before_refinement = successd;
+const auto param_before_refinement = param;
+
+int first_pass_success_count = 0;
+
+for (size_t i = 0;
+     i < success_before_refinement.size();
+     ++i)
+{
+    if (success_before_refinement[i] != -1)
+        ++first_pass_success_count;
+}
+
+// 使用第一遍结果作为初值，在第0层进行置信度门控的光度细化。
+OpticalFlowSingleLevel(
+    magnitude,
+    img1_pyr[0],
+    img2_pyr[0],
+    kp1_pyr,
+    kp2_pyr,
+    successd,
+    false,
+    true,
+    0,
+    &region_model,
+    true,
+    true);
+
+int refinement_success_count = 0;
+
+for (size_t i = 0; i < successd.size(); ++i)
+{
+    if (successd[i] != -1)
+        ++refinement_success_count;
+}
+
+int rollback_count = 0;
+
+const size_t restore_count =
+    std::min(
+        successd.size(),
+        std::min(
+            success_before_refinement.size(),
+            kp2_before_refinement.size()));
+
+for (size_t i = 0; i < restore_count; ++i)
+{
+    if (success_before_refinement[i] != -1 &&
+        successd[i] == -1)
+    {
+        kp2_pyr[i] = kp2_before_refinement[i];
+        successd[i] = success_before_refinement[i];
+
+        if (i < param.size() &&
+            i < param_before_refinement.size())
+        {
+            param[i] = param_before_refinement[i];
+        }
+
+        ++rollback_count;
+    }
+}
+
+int final_success_count = 0;
+
+for (size_t i = 0; i < successd.size(); ++i)
+{
+    if (successd[i] != -1)
+        ++final_success_count;
+}
+
+// 每帧记录第一遍、第二遍和回退后的成功线数量。
+static std::ofstream refinement_summary_file;
+static int refinement_frame_index = 0;
+
+if (!refinement_summary_file.is_open())
+{
+    refinement_summary_file.open(
+        "/tmp/eplf_refinement_summary.csv",
+        std::ios::out | std::ios::trunc);
+
+    refinement_summary_file
+        << "frame,first_pass_success,"
+        << "refinement_success,rollback_count,"
+        << "final_success\n";
+}
+
+if (refinement_summary_file.is_open())
+{
+    refinement_summary_file
+        << refinement_frame_index << ","
+        << first_pass_success_count << ","
+        << refinement_success_count << ","
+        << rollback_count << ","
+        << final_success_count << "\n";
+
+    refinement_summary_file.flush();
+}
+
+++refinement_frame_index;
 
     //在kp2中，真正留下的是追踪成功的点
     //这些点对应的序号在success中保存
