@@ -14,9 +14,15 @@ struct RegionPhotometricModel
     int image_height;
 
     std::array<double, kRegionCount> gain;
-    std::array<double, kRegionCount> bias;
-    std::array<int, kRegionCount> sample_count;
-    std::array<int, kRegionCount> valid;
+std::array<double, kRegionCount> bias;
+
+// 每个区域用于估计的像素数量
+std::array<int, kRegionCount> sample_count;
+
+// 每个区域由多少条不同的线提供了像素
+std::array<int, kRegionCount> line_count;
+
+std::array<int, kRegionCount> valid;
 
     RegionPhotometricModel()
     {
@@ -29,9 +35,10 @@ struct RegionPhotometricModel
         image_height = height;
 
         gain.fill(1.0);
-        bias.fill(0.0);
-        sample_count.fill(0);
-        valid.fill(0);
+bias.fill(0.0);
+sample_count.fill(0);
+line_count.fill(0);
+valid.fill(0);
     }
 
     int index(int row, int col) const

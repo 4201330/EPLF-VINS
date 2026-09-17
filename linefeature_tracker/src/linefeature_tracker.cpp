@@ -463,6 +463,7 @@ struct PhotometricAccumulator
     double sum_y = 0.0;
     double sum_xx = 0.0;
     double sum_xy = 0.0;
+    double sum_yy = 0.0;
 
     void add(double current_gray, double previous_gray)
     {
@@ -471,6 +472,7 @@ struct PhotometricAccumulator
         sum_y += previous_gray;
         sum_xx += current_gray * current_gray;
         sum_xy += current_gray * previous_gray;
+        sum_yy += previous_gray * previous_gray;
     }
 };
 
@@ -512,6 +514,32 @@ bool solveAffinePhotometricModel(
     return true;
 }
 
+double computePhotometricMse(
+    const PhotometricAccumulator &accumulator,
+    double gain,
+    double bias)
+{
+    if (accumulator.count <= 0)
+        return 0.0;
+
+    const double count =
+        static_cast<double>(accumulator.count);
+
+    // sum((previous - gain * current - bias)^2)
+    double squared_error =
+        accumulator.sum_yy +
+        gain * gain * accumulator.sum_xx +
+        count * bias * bias -
+        2.0 * gain * accumulator.sum_xy -
+        2.0 * bias * accumulator.sum_y +
+        2.0 * gain * bias * accumulator.sum_x;
+
+    // 浮点舍入可能产生极小的负数。
+    squared_error = std::max(0.0, squared_error);
+
+    return squared_error / count;
+}
+
 void estimateRegionPhotometricModel(
     const cv::Mat &previous_image,
     const cv::Mat &current_image,
@@ -534,7 +562,8 @@ void estimateRegionPhotometricModel(
     PhotometricAccumulator global_accumulator;
 
     const int patch_radius = 2;
-    const int minimum_region_samples = 200;
+const int minimum_region_samples = 150;
+const int minimum_region_lines = 2;
 
     const size_t line_count = std::min(
         previous_lines.size(),
@@ -546,6 +575,11 @@ void estimateRegionPhotometricModel(
     {
         if (tracking_status[line_index] == -1)
             continue;
+
+            std::array<int, RegionPhotometricModel::kRegionCount>
+    line_region_flags;
+
+line_region_flags.fill(0);
 
         const vector<Point2f> &previous_points =
             previous_lines[line_index].keyPoint;
@@ -619,21 +653,32 @@ void estimateRegionPhotometricModel(
                     }
 
                     const int region_index =
-                        region_model.regionIndex(
-                            current_x,
-                            current_y);
+    region_model.regionIndex(
+        current_x,
+        current_y);
 
-                    regional_accumulators[region_index].add(
+line_region_flags[region_index] = 1;
+
+regional_accumulators[region_index].add(
                         current_gray,
                         previous_gray);
 
-                    global_accumulator.add(
-                        current_gray,
-                        previous_gray);
-                }
+                                    global_accumulator.add(
+                    current_gray,
+                    previous_gray);
             }
         }
     }
+
+    // 当前线在每个区域最多计数一次。
+    for (int region_index = 0;
+         region_index < RegionPhotometricModel::kRegionCount;
+         ++region_index)
+    {
+        if (line_region_flags[region_index])
+            ++region_model.line_count[region_index];
+    }
+}
 
     double global_gain = 1.0;
     double global_bias = 0.0;
@@ -656,11 +701,13 @@ void estimateRegionPhotometricModel(
         double region_bias = 0.0;
 
         const bool region_valid =
-            solveAffinePhotometricModel(
-                regional_accumulators[region_index],
-                minimum_region_samples,
-                region_gain,
-                region_bias);
+    region_model.line_count[region_index] >=
+        minimum_region_lines &&
+    solveAffinePhotometricModel(
+        regional_accumulators[region_index],
+        minimum_region_samples,
+        region_gain,
+        region_bias);
 
         if (region_valid)
         {
@@ -776,8 +823,9 @@ void estimateRegionPhotometricModel(
             std::ios::out | std::ios::trunc);
 
         region_log_file
-            << "frame,row,col,gain,bias,"
-            << "sample_count,valid\n";
+    << "frame,row,col,gain,bias,"
+    << "sample_count,line_count,valid,"
+    << "raw_mse,corrected_mse\n";
     }
 
     if (region_log_file.is_open())
@@ -793,6 +841,18 @@ void estimateRegionPhotometricModel(
                 const int region_index =
                     region_model.index(row, col);
 
+                    const double raw_mse =
+    computePhotometricMse(
+        regional_accumulators[region_index],
+        1.0,
+        0.0);
+
+const double corrected_mse =
+    computePhotometricMse(
+        regional_accumulators[region_index],
+        region_model.gain[region_index],
+        region_model.bias[region_index]);
+
                 region_log_file
                     << region_frame_index << ","
                     << row << ","
@@ -800,7 +860,10 @@ void estimateRegionPhotometricModel(
                     << region_model.gain[region_index] << ","
                     << region_model.bias[region_index] << ","
                     << region_model.sample_count[region_index] << ","
-                    << region_model.valid[region_index] << "\n";
+                    << region_model.line_count[region_index] << ","
+                    << region_model.valid[region_index] << ","
+                    << raw_mse << ","
+                    << corrected_mse << "\n";
             }
         }
 
