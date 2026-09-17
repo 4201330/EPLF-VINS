@@ -382,14 +382,32 @@ class OpticalFlowTracker
 {
 public:
     OpticalFlowTracker(
-        const Mat &magnitude_,
-        const Mat &img1_,
-        const Mat &img2_,
-        const vector<Line> &kp1_,
-        vector<Line> &kp2_,
-        vector<int> &success_,
-        bool inverse_ = true, bool has_initial_ = false, int layer_ = 1) : magnitude(magnitude_), img1(img1_), img2(img2_), kp1(kp1_), kp2(kp2_), success(success_), inverse(inverse_),
-                                                                           has_initial(has_initial_), layer(layer_) {}
+    const Mat &magnitude_,
+    const Mat &img1_,
+    const Mat &img2_,
+    const vector<Line> &kp1_,
+    vector<Line> &kp2_,
+    vector<int> &success_,
+    bool inverse_ = true,
+    bool has_initial_ = false,
+    int layer_ = 1,
+    const RegionPhotometricModel *region_model_ = nullptr,
+    bool refinement_pass_ = false,
+    bool record_diagnostics_ = true)
+    : img1(img1_),
+      img2(img2_),
+      kp1(kp1_),
+      magnitude(magnitude_),
+      kp2(kp2_),
+      success(success_),
+      inverse(inverse_),
+      has_initial(has_initial_),
+      layer(layer_),
+      region_model(region_model_),
+      refinement_pass(refinement_pass_),
+      record_diagnostics(record_diagnostics_)
+{
+}
 
     // vector<vector<Point2f>> kp_2;
 
@@ -404,8 +422,12 @@ private:
     vector<Line> &kp2;
     vector<int> &success;
     bool inverse = true;
-    bool has_initial = false;
-    int layer;
+bool has_initial = false;
+int layer;
+
+const RegionPhotometricModel *region_model = nullptr;
+bool refinement_pass = false;
+bool record_diagnostics = true;
 };
 
 void OpticalFlowSingleLevel(
@@ -416,7 +438,11 @@ void OpticalFlowSingleLevel(
     vector<Line> &kp2,
     vector<int> &success,
     bool inverse = false,
-    bool has_initial_guess = false, int layer_ = 0);
+    bool has_initial_guess = false,
+    int layer_ = 0,
+    const RegionPhotometricModel *region_model = nullptr,
+    bool refinement_pass = false,
+    bool record_diagnostics = true);
 
 #define _LAYERS_ 5;
 

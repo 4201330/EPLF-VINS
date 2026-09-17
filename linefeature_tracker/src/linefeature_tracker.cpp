@@ -97,6 +97,28 @@ inline float GetPixelValue(const cv::Mat &img, float x, float y)
     return (1 - xx) * (1 - yy) * img.at<uchar>(y, x) + xx * (1 - yy) * img.at<uchar>(y, x_a1) + (1 - xx) * yy * img.at<uchar>(y_a1, x) + xx * yy * img.at<uchar>(y_a1, x_a1);
 }
 
+inline double GetPhotometricallyCorrectedPixelValue(
+    const cv::Mat &image,
+    float x,
+    float y,
+    const RegionPhotometricModel *region_model,
+    bool refinement_pass)
+{
+    const double gray =
+        GetPixelValue(image, x, y);
+
+    if (!refinement_pass || region_model == nullptr)
+        return gray;
+
+    const double effective_gain =
+        region_model->effectiveGainAt(x, y);
+
+    const double effective_bias =
+        region_model->effectiveBiasAt(x, y);
+
+    return effective_gain * gray + effective_bias;
+}
+
 void OpticalFlowSingleLevel(
     const Mat &magnitude,
     const Mat &img1,
@@ -106,13 +128,16 @@ void OpticalFlowSingleLevel(
     vector<int> &success,
     bool inverse,
     bool has_initial,
-    int layer)
+    int layer,
+    const RegionPhotometricModel *region_model,
+    bool refinement_pass,
+    bool record_diagnostics)
 {
     kp2.resize(kp1.size());
     success.resize(kp1.size());
 
     // 只在最精细的第0层记录一次，避免每个金字塔层重复记录
-    if (layer == 0)
+    if (layer == 0 && record_diagnostics)
     {
         std::lock_guard<std::mutex> lock(g_line_diag_mutex);
 
@@ -143,8 +168,11 @@ void OpticalFlowSingleLevel(
         kp2,
         success,
         inverse,
-        has_initial,
-        layer);
+has_initial,
+layer,
+region_model,
+refinement_pass,
+record_diagnostics);
 
     parallel_for_(
         Range(0, kp1.size()),
@@ -239,8 +267,12 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
             else if (layer == _LAYER_ - 1)
                 param[i][0] = param[i][1] = param[i][2] = 0;
             double &g1 = param[i][0], &g2 = param[i][1], &g3 = param[i][2];
-            g1 *= 2;
-            g2 *= 2;
+
+if (!refinement_pass)
+{
+    g1 *= 2;
+    g2 *= 2;
+}
 
             double cost = 0, lastCost = 0;
             int succ = i; // indicate if this point succeeded
@@ -287,7 +319,13 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
                         {
 
                             double gray01 = GetPixelValue(img1, kp[m].x + x, kp[m].y + y);
-                            double gray02 = GetPixelValue(img2, kp[m].x + x + dx, kp[m].y + y + dy);
+                            double gray02 =
+    GetPhotometricallyCorrectedPixelValue(
+        img2,
+        kp[m].x + x + dx,
+        kp[m].y + y + dy,
+        region_model,
+        refinement_pass);
                             // double error = GetPixelValue(img1, kp[m].x + x, kp[m].y + y) -
                             //                GetPixelValue(img2, kp[m].x + x + dx, kp[m].y + y + dy);
                             double error = gray01 - gray02;
@@ -303,10 +341,32 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
                                 // dx = g1 + (kp[m].y - kp[0].y) * g3;
                                 // dy = g2 - (kp[m].x - kp[0].x) * g3;
                                 J0 = -1.0 * Eigen::Vector2d(
-                                                0.5 * (GetPixelValue(img2, kp[m].x + dx + x + 1, kp[m].y + dy + y) -
-                                                       GetPixelValue(img2, kp[m].x + dx + x - 1, kp[m].y + dy + y)),
-                                                0.5 * (GetPixelValue(img2, kp[m].x + dx + x, kp[m].y + dy + y + 1) -
-                                                       GetPixelValue(img2, kp[m].x + dx + x, kp[m].y + dy + y - 1)));
+    0.5 *
+        (GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x + 1,
+             kp[m].y + dy + y,
+             region_model,
+             refinement_pass) -
+         GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x - 1,
+             kp[m].y + dy + y,
+             region_model,
+             refinement_pass)),
+    0.5 *
+        (GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x,
+             kp[m].y + dy + y + 1,
+             region_model,
+             refinement_pass) -
+         GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x,
+             kp[m].y + dy + y - 1,
+             region_model,
+             refinement_pass)));
                                 Eigen::Matrix<double, 2, 3> J1;
                                 J1 << 1.0, 0.0, dealty - dy0,
                                     0.0, 1.0, -dealtx - dx0;
@@ -319,10 +379,32 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
                                 // dy = g2 - (kp[m].x - kp[0].x) * g3 + (kp[m].y - kp[0].y) * g4;
 
                                 J0 = -1.0 * Eigen::Vector2d(
-                                                0.5 * (GetPixelValue(img2, kp[m].x + dx + x + 1, kp[m].y + dy + y) -
-                                                       GetPixelValue(img2, kp[m].x + dx + x - 1, kp[m].y + dy + y)),
-                                                0.5 * (GetPixelValue(img2, kp[m].x + dx + x, kp[m].y + dy + y + 1) -
-                                                       GetPixelValue(img2, kp[m].x + dx + x, kp[m].y + dy + y - 1)));
+    0.5 *
+        (GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x + 1,
+             kp[m].y + dy + y,
+             region_model,
+             refinement_pass) -
+         GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x - 1,
+             kp[m].y + dy + y,
+             region_model,
+             refinement_pass)),
+    0.5 *
+        (GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x,
+             kp[m].y + dy + y + 1,
+             region_model,
+             refinement_pass) -
+         GetPhotometricallyCorrectedPixelValue(
+             img2,
+             kp[m].x + dx + x,
+             kp[m].y + dy + y - 1,
+             region_model,
+             refinement_pass)));
                                 Eigen::Matrix<double, 2, 3> J1;
                                 J1 << 1.0, 0.0, dealty - dy0,
                                     0.0, 1.0, -dealtx - dx0;
@@ -423,7 +505,7 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range)
                 succ = -1;
 
             success[i] = succ;
-            if (layer == 0)
+            if (layer == 0 && record_diagnostics)
 {
     const double point_count =
         kp.empty() ? 1.0 : static_cast<double>(kp.size());

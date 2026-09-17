@@ -77,6 +77,29 @@ valid.fill(0);
         return interpolate(bias, x, y);
     }
 
+    double confidenceAt(float x, float y) const
+{
+    const double value = interpolate(confidence, x, y);
+
+    return std::max(0.0, std::min(1.0, value));
+}
+
+double effectiveGainAt(float x, float y) const
+{
+    const double confidence_value = confidenceAt(x, y);
+    const double gain_value = gainAt(x, y);
+
+    return 1.0 +
+           confidence_value * (gain_value - 1.0);
+}
+
+double effectiveBiasAt(float x, float y) const
+{
+    const double confidence_value = confidenceAt(x, y);
+
+    return confidence_value * biasAt(x, y);
+}
+
 private:
     double interpolate(
         const std::array<double, kRegionCount> &values,
