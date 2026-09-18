@@ -12,6 +12,8 @@ double F_THRESHOLD;
 int SHOW_TRACK;
 int STEREO_TRACK;
 int EQUALIZE;
+int ENABLE_REGION_PHOTOMETRIC;
+int ENABLE_HUBER_PHOTOMETRIC;
 int ROW;
 int COL;
 int FOCAL_LENGTH;
@@ -55,8 +57,39 @@ void readParameters(ros::NodeHandle &n)
     FREQ = fsSettings["freq"];
     F_THRESHOLD = fsSettings["F_threshold"];
     SHOW_TRACK = fsSettings["show_track"];
-    EQUALIZE = fsSettings["equalize"];
-    FISHEYE = fsSettings["fisheye"];
+EQUALIZE = fsSettings["equalize"];
+
+// 兼容旧配置：YAML中没有字段时，默认开启当前算法。
+ENABLE_REGION_PHOTOMETRIC = 1;
+ENABLE_HUBER_PHOTOMETRIC = 1;
+
+const cv::FileNode region_photometric_node =
+    fsSettings["enable_region_photometric"];
+
+if (!region_photometric_node.empty())
+{
+    region_photometric_node >>
+        ENABLE_REGION_PHOTOMETRIC;
+}
+
+const cv::FileNode huber_photometric_node =
+    fsSettings["enable_huber_photometric"];
+
+if (!huber_photometric_node.empty())
+{
+    huber_photometric_node >>
+        ENABLE_HUBER_PHOTOMETRIC;
+}
+
+ROS_INFO_STREAM(
+    "Enable region photometric: "
+    << ENABLE_REGION_PHOTOMETRIC);
+
+ROS_INFO_STREAM(
+    "Enable Huber photometric: "
+    << ENABLE_HUBER_PHOTOMETRIC);
+
+FISHEYE = fsSettings["fisheye"];
     if (FISHEYE == 1)
         FISHEYE_MASK = VINS_FOLDER_PATH + "config/fisheye_mask.jpg";
     CAM_NAMES.push_back(config_file);

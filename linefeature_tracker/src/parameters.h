@@ -22,6 +22,11 @@ extern double F_THRESHOLD;
 extern int SHOW_TRACK;
 extern int STEREO_TRACK;
 extern int EQUALIZE;
+
+// 区域光照模型与Huber鲁棒估计开关
+extern int ENABLE_REGION_PHOTOMETRIC;
+extern int ENABLE_HUBER_PHOTOMETRIC;
+
 extern int FISHEYE;
 extern bool PUB_THIS_FRAME;
 extern Eigen::Matrix3d RCI;

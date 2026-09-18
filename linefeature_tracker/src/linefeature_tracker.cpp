@@ -613,6 +613,10 @@ bool solveAffinePhotometricModel(
     gain = std::max(0.5, std::min(2.0, gain));
     bias = std::max(-50.0, std::min(50.0, bias));
 
+    // 关闭Huber时，直接返回普通最小二乘结果。
+if (!ENABLE_HUBER_PHOTOMETRIC)
+    return true;
+
     // 第二步：使用Huber权重进行三轮IRLS。
     const int robust_iterations = 3;
 
@@ -1229,7 +1233,7 @@ void OpticalFlowMultiLevel(
     level,
     nullptr,
     false,
-    false);
+    !ENABLE_REGION_PHOTOMETRIC);
         else
             OpticalFlowSingleLevel(
     magnitude,
@@ -1243,7 +1247,7 @@ void OpticalFlowMultiLevel(
     level,
     nullptr,
     false,
-    false);
+    !ENABLE_REGION_PHOTOMETRIC);
         // ROS_WARN("success single level(%d)\n", level);
         chrono::steady_clock::time_point t4 = chrono::steady_clock::now();
         auto time_used = chrono::duration_cast<chrono::duration<double>>(t4 - t3);
@@ -1263,6 +1267,8 @@ void OpticalFlowMultiLevel(
     auto time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
     // ROS_WARN("line : %d  use %f s\n", kp1.size(), time_used);
     // ROS_WARN("success multi level, %d lines\n", kp2_pyr.size());
+    if (ENABLE_REGION_PHOTOMETRIC)
+{
 estimateRegionPhotometricModel(
     img1_pyr[0],
     img2_pyr[0],
@@ -1373,7 +1379,7 @@ if (refinement_summary_file.is_open())
 }
 
 ++refinement_frame_index;
-
+}
     //在kp2中，真正留下的是追踪成功的点
     //这些点对应的序号在success中保存
     cv::Mat mergel = cv::Mat(ROW, COL, CV_8UC1, 255);

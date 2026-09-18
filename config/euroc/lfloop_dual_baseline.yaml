@@ -50,8 +50,8 @@ F_threshold: 1.0        # ransac threshold (pixel)
 show_track: 1           # publish tracking image as topic
 equalize: 1             # if image is too dark or light, trun on equalize to find enough features
 # Regional photometric refinement
-enable_region_photometric: 1
-enable_huber_photometric: 1
+enable_region_photometric: 0
+enable_huber_photometric: 0
 fisheye: 0              # if using fisheye, trun on it. A circle mask will be loaded to remove edge noisy points
 
 #optimization parameters
