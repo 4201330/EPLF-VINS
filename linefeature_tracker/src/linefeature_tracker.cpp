@@ -141,7 +141,8 @@ void OpticalFlowSingleLevel(
     {
         std::lock_guard<std::mutex> lock(g_line_diag_mutex);
 
-        ++g_line_diag_frame;
+        if (!refinement_pass)
+    ++g_line_diag_frame;
 
         // 第一次运行时创建CSV文件并写入表头
         if (!g_line_diag_file.is_open())
@@ -155,7 +156,7 @@ void OpticalFlowSingleLevel(
                 << "mean_squared_residual,"
                 << "mean_patch_brightness_difference,"
                 << "gray_rejected,final_success,"
-                << "g1,g2,g3\n";
+                << "g1,g2,g3,refinement_pass\n";
         }
     }
 
@@ -528,7 +529,8 @@ if (!refinement_pass)
             << (succ != -1 ? 1 : 0) << ","
             << g1 << ","
             << g2 << ","
-            << g3 << "\n";
+            << g3 << ","
+            << (refinement_pass ? 1 : 0) << "\n";
     }
 }
         }
@@ -1233,7 +1235,7 @@ void OpticalFlowMultiLevel(
     level,
     nullptr,
     false,
-    !ENABLE_REGION_PHOTOMETRIC);
+    true);
         else
             OpticalFlowSingleLevel(
     magnitude,
@@ -1247,7 +1249,7 @@ void OpticalFlowMultiLevel(
     level,
     nullptr,
     false,
-    !ENABLE_REGION_PHOTOMETRIC);
+    true);
         // ROS_WARN("success single level(%d)\n", level);
         chrono::steady_clock::time_point t4 = chrono::steady_clock::now();
         auto time_used = chrono::duration_cast<chrono::duration<double>>(t4 - t3);
